@@ -23,7 +23,17 @@ app.post("/api/extract", async (req, res) => {
   let browser;
   try {
     // 1. Puppeteer로 가상 브라우저 실행 (headless 모드)
-    browser = await puppeteer.launch({ headless: true });
+    // 기존 코드: browser = await puppeteer.launch({ headless: true });
+    // 아래 코드로 수정:
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+      ],
+    });
     const page = await browser.newPage();
 
     // 이치방쿠지 사이트 접속 및 네트워크 안정화 대기
