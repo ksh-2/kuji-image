@@ -1,3 +1,5 @@
 {
-  "packages": ["google-chrome-stable"]
+  "packages": {
+    "google-chrome-stable": "latest"
+  }
 }
