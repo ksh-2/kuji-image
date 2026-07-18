@@ -62,10 +62,8 @@
         background-color: #ccc;
         cursor: not-allowed;
       }
-
-      /* 📊 프로그레스 바 스타일 추가 */
       .progress-container {
-        display: none; /* 기본적으로는 숨김 */
+        display: none;
         width: 95%;
         background-color: #e0e0e0;
         border-radius: 10px;
@@ -75,10 +73,9 @@
       .progress-bar {
         width: 0%;
         height: 12px;
-        background-color: #28a745; /* 성공적인 초록색 */
-        transition: width 0.4s ease; /* 부드러운 애니메이션 효과 */
+        background-color: #28a745;
+        transition: width 0.4s ease;
       }
-
       #status {
         margin-top: 10px;
         color: #666;
@@ -90,7 +87,7 @@
   </head>
   <body>
     <div class="container">
-      <h2>이미지 추출기 (범위 다운로드)</h2>
+      <h2>이미지 추출기 (타이틀 파일명 적용)</h2>
       <p>작품 주소와 받고 싶은 번호 범위를 입력하세요.</p>
 
       <input
@@ -117,7 +114,6 @@
 
       <button id="extractBtn">연속 일괄 다운로드 시작</button>
 
-      <!-- 📊 시각적 진행 상황 창 추가 -->
       <div class="progress-container" id="progressContainer">
         <div class="progress-bar" id="progressBar"></div>
       </div>
@@ -139,7 +135,6 @@
           const statusDiv = document.getElementById("status");
           const btn = document.getElementById("extractBtn");
 
-          // 프로그레스 바 엘리먼트 가져오기
           const progressContainer =
             document.getElementById("progressContainer");
           const progressBar = document.getElementById("progressBar");
@@ -166,20 +161,17 @@
           }
 
           btn.disabled = true;
-
-          // 📊 다운로드 시작 시 게이지 초기화 및 표시
           progressContainer.style.display = "block";
           progressBar.style.width = "0%";
 
           const totalCount = endNum - startNum + 1;
-          let successCount = 0;
 
           for (let i = startNum; i <= endNum; i++) {
-            const currentFilename = `${baseUrl.split("/").pop()}${i}`;
+            const currentCode = `${baseUrl.split("/").pop()}${i}`; // 예: myhero32
             const currentUrl = `${baseUrl}${i}`;
             const currentIndex = i - startNum + 1;
 
-            statusDiv.textContent = `[${currentIndex}/${totalCount}] 현재 ${currentFilename} 분석 중...\n(Puppeteer 구동 중, 잠시만 기다려주세요)`;
+            statusDiv.textContent = `[${currentIndex}/${totalCount}] 현재 ${currentCode} 분석 중...\n(타이틀 정보 및 이미지 크롤링 중)`;
 
             try {
               const response = await fetch(
@@ -195,13 +187,29 @@
                 throw new Error(`서버 에러 또는 없는 상품 번호입니다.`);
               }
 
-              statusDiv.textContent = `[${currentIndex}/${totalCount}] ${currentFilename} 압축 완료! 다운로드 중...`;
+              // 💡 [핵심 변경] 서버가 보낸 헤더에서 쿠지 타이틀 명칭 꺼내오기
+              const encodedTitle = response.headers.get("X-Kuji-Title");
+              // 디코딩을 진행하고, 없으면 기존 코드 이름(myhero32)을 파일명으로 사용합니다.
+              let downloadFilename = encodedTitle
+                ? decodeURIComponent(encodedTitle)
+                : currentCode;
+
+              // 윈도우/맥 파일명 특수문자 제거 (\ / : * ? " < > |)
+              downloadFilename = downloadFilename.replace(
+                /[\x00-\x1f\x7f\\/:*?"<>|]/g,
+                "_",
+              );
+
+              statusDiv.textContent = `[${currentIndex}/${totalCount}] 명칭: "${downloadFilename}"\n압축 완료! 다운로드 중...`;
 
               const blob = await response.blob();
               const downloadUrl = window.URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = downloadUrl;
-              a.download = `${currentFilename}.zip`;
+
+              // 💡 주소창 번호 대신 크롤링한 타이틀 이름으로 파일명 지정!
+              a.download = `${downloadFilename}.zip`;
+
               document.body.appendChild(a);
               a.click();
               a.remove();
@@ -209,24 +217,22 @@
             } catch (err) {
               console.error(err);
               alert(
-                `${currentFilename} 추출 실패: ${err.message}\n다음 번호로 계속 진행합니다.`,
+                `${currentCode} 추출 실패: ${err.message}\n다음 번호로 계속 진행합니다.`,
               );
             }
 
-            // 📊 작업 하나가 끝날 때마다 프로그레스 바 게이지 채우기
             const percent = Math.round((currentIndex / totalCount) * 100);
             progressBar.style.width = `${percent}%`;
 
             if (i < endNum) {
-              statusDiv.textContent = `진행률: ${percent}%\n서버 과부화 방지 3초간 대기 중...`;
+              statusDiv.textContent = `진행률: ${percent}%\n안전한 진행을 위해 3초간 대기 중...`;
               await delay(3000);
             }
           }
 
-          // 최종 완료 처리
           progressBar.style.width = "100%";
           statusDiv.textContent =
-            "지정한 모든 범위의 다운로드가 완료되었습니다!";
+            "🎉 지정한 모든 범위의 다운로드가 완료되었습니다!";
           btn.disabled = false;
         });
     </script>

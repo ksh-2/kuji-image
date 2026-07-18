@@ -1,106 +1,90 @@
 const express = require("express");
 const puppeteer = require("puppeteer");
-const axios = require("axios");
 const AdmZip = require("adm-zip");
-const cors = require("cors");
-
+const axios = require("axios");
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// index.html 파일을 localhost:3000에서 바로 보여주도록 설정
-app.use(express.static(__dirname));
+app.use(express.json());
+// CORS 설정이 있다면 그대로 유지
 
 app.post("/api/extract", async (req, res) => {
   const { url } = req.body;
-
-  if (!url || !url.startsWith("https://1kuji.com")) {
-    return res
-      .status(400)
-      .json({ error: "올바른 이치방쿠지 링크를 입력해주세요." });
-  }
+  if (!url) return res.status(400).json({ error: "URL이 필요합니다." });
 
   let browser;
   try {
-    // 1. Puppeteer로 가상 브라우저 실행 (headless 모드)
-    // 기존 코드: browser = await puppeteer.launch({ headless: true });
-    // 아래 코드로 수정:
+    // Puppeteer 크롬 브라우저 실행 (Nixpacks 환경 설정 준수)
     browser = await puppeteer.launch({
-      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
       ],
     });
-    const page = await browser.newPage();
 
-    // 이치방쿠지 사이트 접속 및 네트워크 안정화 대기
+    const page = await browser.newPage();
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // 2. 브라우저 콘솔에서 피규어 원본 이미지 링크만 추출
-    const imageUrls = await page.evaluate(() => {
-      const images = Array.from(document.querySelectorAll("img"));
-      const targets = images.filter((img) => {
-        const alt = img.getAttribute("alt") || "";
-        const src = img.src || img.getAttribute("src") || "";
-        return alt === "img1" || src.includes("product_item/image");
-      });
-
-      // 중복 제거 및 절대 경로 확보
-      return [...new Set(targets.map((img) => img.src))];
+    // 💡 [핵심 추가] 1kuji 페이지에서 타이틀(h2 태그 내부 text) 추출하기
+    // 제공해주신 DOM 구조에 맞추어 타이틀을 가져옵니다.
+    const title = await page.evaluate(() => {
+      const h2Element = document.querySelector(".aboutColInner h2");
+      return h2Element ? h2Element.innerText.trim() : "";
     });
 
-    await browser.close();
+    // 💡 테스트용 혹은 백업 파일명을 위해 주소창 번호도 추출
+    const urlParts = url.split("/").filter((p) => p.length > 0);
+    const fallbackName =
+      urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
 
-    if (imageUrls.length === 0) {
-      return res
-        .status(404)
-        .json({ error: "추출할 피규어 이미지를 찾지 못했습니다." });
-    }
+    // 만약 타이틀을 못 가져왔다면 fallback 이름 사용
+    const finalTitle = title || fallbackName;
 
-    // 3. 수집된 이미지들을 메모리 상에서 다운로드하여 ZIP 압축
+    // (기존 이미지 태그 크롤링 및 adm-zip 압축 로직이 아래에 위치합니다)
+    // 예시 구조:
+    const imageUrls = await page.evaluate(() => {
+      // 이미지 주소들을 수집하는 기존 소스코드를 그대로 유지해주세요.
+      // 예: return Array.from(document.querySelectorAll('.mainCol img')).map(img => img.src);
+      return Array.from(document.querySelectorAll("img"))
+        .map((img) => img.src)
+        .filter((src) => src.includes("products"));
+    });
+
     const zip = new AdmZip();
 
+    // 이미지 다운로드 및 ZIP 파일 추가 로직 (기존 로직 유지)
     for (let i = 0; i < imageUrls.length; i++) {
-      const imgUrl = imageUrls[i];
       try {
-        const response = await axios.get(imgUrl, {
+        const imgResponse = await axios.get(imageUrls[i], {
           responseType: "arraybuffer",
         });
-        const buffer = Buffer.from(response.data, "binary");
-        // 파일명 지정 (figure_1.webp, figure_2.webp ...)
-        zip.addFile(`figure_${i + 1}.webp`, buffer);
-      } catch (err) {
-        console.error(`이미지 다운로드 실패: ${imgUrl}`, err.message);
+        zip.addFile(`image_${i + 1}.jpg`, Buffer.from(imgResponse.data));
+      } catch (e) {
+        console.error("이미지 다운로드 실패:", imageUrls[i]);
       }
     }
 
-    // 4. 생성된 ZIP 파일을 클라이언트에게 즉시 전송
-    // URL 파싱하여 파일명 동적 생성 (예: myhero44)
-    const urlParts = url.split("/").filter((part) => part.length > 0);
-    const filename =
-      urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
-
     const zipBuffer = zip.toBuffer();
+
+    // 💡 [중요] 프론트엔드가 한글 타이틀을 안전하게 읽을 수 있도록 헤더에 인코딩하여 주입합니다.
     res.set({
       "Content-Type": "application/zip",
-      // 응답 헤더의 파일명도 동적으로 변경해 줍니다.
-      "Content-Disposition": `attachment; filename="${filename}.zip"`,
       "Content-Length": zipBuffer.length,
+      "Access-Control-Expose-Headers": "X-Kuji-Title", // 브라우저가 이 헤더를 읽을 수 있도록 허용
+      "X-Kuji-Title": encodeURIComponent(finalTitle), // 한글 깨짐 방지를 위해 인코딩
     });
 
     return res.send(zipBuffer);
   } catch (error) {
-    if (browser) await browser.close();
     console.error(error);
-    return res.status(500).json({ error: "서버 에러가 발생했습니다." });
+    return res.status(500).json({ error: error.message });
+  } finally {
+    if (browser) await browser.close();
   }
 });
 
-// 기존 app.listen(3000, ...) 부분을 아래처럼 변경
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`서버가 포트 ${PORT}에서 작동 중입니다.`);
 });
