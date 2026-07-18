@@ -9,6 +9,30 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+// 💡 헬퍼 함수: 번역 실패 시 재시도를 위한 딜레이 함수
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 💡 안전한 번역 수행 함수 (실패 시 1회 재시도 로직 내장)
+async function safeTranslate(text) {
+  try {
+    const res = await translate(text, { to: "ko" });
+    return res.text;
+  } catch (err) {
+    console.warn(
+      "첫 번째 번역 시도 실패, 1.5초 후 재시도합니다...",
+      err.message,
+    );
+    await wait(1500);
+    try {
+      const resRetry = await translate(text, { to: "ko" });
+      return resRetry.text;
+    } catch (retryErr) {
+      console.error("두 번째 번역 시도도 실패했습니다.", retryErr.message);
+      return null; // 완전히 실패 시 null 반환
+    }
+  }
+}
+
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -17,7 +41,6 @@ app.post("/api/extract", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL이 필요합니다." });
 
-  // 💡 URL에서 고유 상품 코드 추출 (예: https://1kuji.com/products/kimetsu28 -> kimetsu28)
   const urlParts = url.split("/").filter((p) => p.length > 0);
   const kujiCode =
     urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
@@ -46,21 +69,23 @@ app.post("/api/extract", async (req, res) => {
     let finalTitle = "";
 
     if (rawTitle) {
-      try {
-        const translation = await translate(rawTitle, { to: "ko" });
-        // 💡 [핵심 수정] 번역된 한글 제목 뒤에 고유 코드(예: kimetsu28)를 결합합니다.
-        finalTitle = `${translation.text}(${kujiCode})`;
-        console.log(`[번역 및 코드 추가] -> ${finalTitle}`);
-      } catch (transErr) {
-        console.error("번역 실패, 일본어 제목 + 코드로 대체:", transErr);
+      // 💡 한결 강인해진 번역 함수 호출
+      const translatedText = await safeTranslate(rawTitle);
+
+      if (translatedText) {
+        finalTitle = `${translatedText}(${kujiCode})`;
+      } else {
+        // 번역 API가 완벽하게 차단되었을 때: 일본어 원문 활용
         finalTitle = `${rawTitle}(${kujiCode})`;
       }
     } else {
-      // 제목 크롤링 자체를 실패했을 때의 폴백 처리
-      finalTitle = kujiCode;
+      // 제목 태그를 못 긁었을 때 기본적인 명칭 조립 규칙 고정 (가독성 향상)
+      // 영어 소문자로 깨지는 걸 방지하기 위해 앞글자를 대문자로 정제
+      const cleanCode = kujiCode.charAt(0).toUpperCase() + kujiCode.slice(1);
+      finalTitle = `제일복권_${cleanCode}(${kujiCode})`;
     }
 
-    // 본문 영역 내부의 이미지 에셋 타겟팅 수집
+    // 본문 영역 내부의 상품 이미지 에셋 정밀 수집
     const imageUrls = await page.evaluate(() => {
       const contentImages = Array.from(
         document.querySelectorAll(
