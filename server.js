@@ -17,6 +17,11 @@ app.post("/api/extract", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL이 필요합니다." });
 
+  // 💡 URL에서 고유 상품 코드 추출 (예: https://1kuji.com/products/kimetsu28 -> kimetsu28)
+  const urlParts = url.split("/").filter((p) => p.length > 0);
+  const kujiCode =
+    urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
+
   let browser;
   try {
     browser = await puppeteer.launch({
@@ -29,7 +34,6 @@ app.post("/api/extract", async (req, res) => {
     });
 
     const page = await browser.newPage();
-    // 일본 원본 데이터 확보를 위해 헤더 고정
     await page.setExtraHTTPHeaders({ "Accept-Language": "ja-JP,ja;q=0.9" });
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
@@ -39,37 +43,34 @@ app.post("/api/extract", async (req, res) => {
       return h2Element ? h2Element.innerText.trim() : "";
     });
 
-    const urlParts = url.split("/").filter((p) => p.length > 0);
-    const fallbackName =
-      urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
-
-    let finalTitle = fallbackName;
+    let finalTitle = "";
 
     if (rawTitle) {
       try {
         const translation = await translate(rawTitle, { to: "ko" });
-        finalTitle = translation.text;
-        console.log(`[번역 성공] 원문: ${rawTitle} -> 한글: ${finalTitle}`);
+        // 💡 [핵심 수정] 번역된 한글 제목 뒤에 고유 코드(예: kimetsu28)를 결합합니다.
+        finalTitle = `${translation.text}(${kujiCode})`;
+        console.log(`[번역 및 코드 추가] -> ${finalTitle}`);
       } catch (transErr) {
-        console.error("번역 실패, 일본어 대체:", transErr);
-        finalTitle = rawTitle;
+        console.error("번역 실패, 일본어 제목 + 코드로 대체:", transErr);
+        finalTitle = `${rawTitle}(${kujiCode})`;
       }
+    } else {
+      // 제목 크롤링 자체를 실패했을 때의 폴백 처리
+      finalTitle = kujiCode;
     }
 
-    // 💡 [핵심 수정] 주소에 'products' 문자열 매칭 대신, 메인 본문(.mainCol) 영역 안에 있는 진짜 상품 이미지들을 타겟팅합니다.
+    // 본문 영역 내부의 이미지 에셋 타겟팅 수집
     const imageUrls = await page.evaluate(() => {
-      // 본문 영역 또는 갤러리 영역의 이미지 태그들을 수집
       const contentImages = Array.from(
         document.querySelectorAll(
           ".mainCol img, #galleryCol img, .aboutColInner img",
         ),
       );
-
       return contentImages
         .map((img) => img.src)
         .filter((src) => {
           if (!src) return false;
-          // 로고, 아이콘, 탑 버튼, 페이스북/트위터 공유 버튼 이미지 등 불필요한 에셋은 전부 제외
           const isNoise =
             src.includes("logo") ||
             src.includes("icon") ||
@@ -82,7 +83,6 @@ app.post("/api/extract", async (req, res) => {
         });
     });
 
-    // 중복 제거 (동일한 이미지 주소가 여러 개 파싱되는 것 방지)
     const uniqueImageUrls = [...new Set(imageUrls)];
 
     if (uniqueImageUrls.length === 0) {
@@ -101,7 +101,6 @@ app.post("/api/extract", async (req, res) => {
         const imgResponse = await axios.get(uniqueImageUrls[i], {
           responseType: "arraybuffer",
         });
-        // 파일 확장자 추출 (.jpg, .png 등) 및 폴백 처리
         let ext = ".jpg";
         if (uniqueImageUrls[i].toLowerCase().includes(".png")) ext = ".png";
         if (uniqueImageUrls[i].toLowerCase().includes(".webp")) ext = ".webp";
