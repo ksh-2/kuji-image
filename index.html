@@ -82,18 +82,22 @@
         font-size: 14px;
         white-space: pre-line;
         line-height: 1.5;
+        text-align: left;
+        padding: 0 10px;
       }
     </style>
   </head>
   <body>
     <div class="container">
-      <h2>이미지 추출기 (타이틀 파일명 적용)</h2>
-      <p>작품 주소와 받고 싶은 번호 범위를 입력하세요.</p>
+      <h2 style="text-align: center">이미지 추출기 (한글 자동 번역)</h2>
+      <p style="text-align: center">
+        작품 주소와 받고 싶은 번호 범위를 입력하세요.
+      </p>
 
       <input
         type="text"
         id="urlInput"
-        placeholder="예시: https://1kuji.com/products/myhero"
+        placeholder="예시: https://1kuji.com/products/kimetsu"
       />
 
       <div class="input-group">
@@ -101,14 +105,14 @@
           type="number"
           id="startNum"
           class="range-input"
-          placeholder="시작 번호 (ex. 32)"
+          placeholder="시작 번호 (ex. 28)"
         />
         <span>~</span>
         <input
           type="number"
           id="endNum"
           class="range-input"
-          placeholder="끝 번호 (ex. 44)"
+          placeholder="끝 번호 (ex. 30)"
         />
       </div>
 
@@ -163,15 +167,17 @@
           btn.disabled = true;
           progressContainer.style.display = "block";
           progressBar.style.width = "0%";
+          statusDiv.innerHTML = "";
 
           const totalCount = endNum - startNum + 1;
+          let errorsLog = [];
 
           for (let i = startNum; i <= endNum; i++) {
-            const currentCode = `${baseUrl.split("/").pop()}${i}`; // 예: myhero32
+            const currentCode = `${baseUrl.split("/").pop()}${i}`;
             const currentUrl = `${baseUrl}${i}`;
             const currentIndex = i - startNum + 1;
 
-            statusDiv.textContent = `[${currentIndex}/${totalCount}] 현재 ${currentCode} 분석 중...\n(타이틀 정보 및 이미지 크롤링 중)`;
+            statusDiv.innerHTML = `⏳ <b>[${currentIndex}/${totalCount}]</b> 현재 <code>${currentCode}</code> 추출 및 자동 번역 진행 중...`;
 
             try {
               const response = await fetch(
@@ -184,55 +190,62 @@
               );
 
               if (!response.ok) {
-                throw new Error(`서버 에러 또는 없는 상품 번호입니다.`);
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(
+                  errData.error || `서버 에러 (${response.status})`,
+                );
               }
 
-              // 💡 [핵심 변경] 서버가 보낸 헤더에서 쿠지 타이틀 명칭 꺼내오기
               const encodedTitle = response.headers.get("X-Kuji-Title");
-              // 디코딩을 진행하고, 없으면 기존 코드 이름(myhero32)을 파일명으로 사용합니다.
               let downloadFilename = encodedTitle
                 ? decodeURIComponent(encodedTitle)
                 : currentCode;
 
-              // 윈도우/맥 파일명 특수문자 제거 (\ / : * ? " < > |)
+              // 특수문자 정제
               downloadFilename = downloadFilename.replace(
                 /[\x00-\x1f\x7f\\/:*?"<>|]/g,
                 "_",
               );
 
-              statusDiv.textContent = `[${currentIndex}/${totalCount}] 명칭: "${downloadFilename}"\n압축 완료! 다운로드 중...`;
+              if (!downloadFilename.trim()) {
+                downloadFilename = currentCode;
+              }
+
+              statusDiv.innerHTML = `✅ <b>[${currentIndex}/${totalCount}]</b> 압축 성공!<br>📦 파일명: <code>${downloadFilename}.zip</code>`;
 
               const blob = await response.blob();
               const downloadUrl = window.URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = downloadUrl;
-
-              // 💡 주소창 번호 대신 크롤링한 타이틀 이름으로 파일명 지정!
               a.download = `${downloadFilename}.zip`;
-
               document.body.appendChild(a);
               a.click();
               a.remove();
               window.URL.revokeObjectURL(downloadUrl);
             } catch (err) {
               console.error(err);
-              alert(
-                `${currentCode} 추출 실패: ${err.message}\n다음 번호로 계속 진행합니다.`,
-              );
+              errorsLog.push(`❌ <b>${currentCode}번 실패:</b> ${err.message}`);
             }
 
             const percent = Math.round((currentIndex / totalCount) * 100);
             progressBar.style.width = `${percent}%`;
 
             if (i < endNum) {
-              statusDiv.textContent = `진행률: ${percent}%\n안전한 진행을 위해 3초간 대기 중...`;
-              await delay(3000);
+              await delay(3000); // 3초 휴식
             }
           }
 
           progressBar.style.width = "100%";
-          statusDiv.textContent =
-            "🎉 지정한 모든 범위의 다운로드가 완료되었습니다!";
+
+          if (errorsLog.length > 0) {
+            statusDiv.innerHTML =
+              `<span style="color:red; font-weight:bold;">⚠️ 다운로드 종료 (일부 실패 항목 발생)</span><br>` +
+              errorsLog.join("<br>");
+          } else {
+            statusDiv.innerHTML =
+              "<b>지정한 모든 범위의 다운로드가 완료되었습니다!<b>";
+          }
+
           btn.disabled = false;
         });
     </script>

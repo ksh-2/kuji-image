@@ -2,30 +2,17 @@ const express = require("express");
 const puppeteer = require("puppeteer");
 const AdmZip = require("adm-zip");
 const axios = require("axios");
-const path = require("path"); // 💡 경로 처리를 위해 추가
+const path = require("path");
+const { translate } = require("@vitalets/google-translate-api"); // 💡 번역 라이브러리 로드
 const app = express();
 
 app.use(express.json());
-
-// 💡 [핵심 추가] 루트 폴더에 있는 index.html 및 정적 파일들을 브라우저에 서빙합니다.
 app.use(express.static(path.join(__dirname)));
 
-// CORS 설정이 필요한 경우 아래 주석을 해제하세요.
-/*
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, X-Kuji-Title");
-  res.header("Access-Control-Expose-Headers", "X-Kuji-Title");
-  next();
-});
-*/
-
-// 💡 [핵심 추가] 사용자가 그냥 주소만 치고 들어왔을 때 index.html을 보여줍니다.
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-//  crawling API 엔드포인트
 app.post("/api/extract", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL이 필요합니다." });
@@ -42,31 +29,50 @@ app.post("/api/extract", async (req, res) => {
     });
 
     const page = await browser.newPage();
+    // 💡 일본 원본 페이지를 긁기 위해 언어 설정을 일본어로 명시
+    await page.setExtraHTTPHeaders({ "Accept-Language": "ja-JP,ja;q=0.9" });
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // 1kuji 페이지에서 타이틀(h2 태그 내부 text) 추출
-    const title = await page.evaluate(() => {
+    // 💡 1kuji 원본 일본어 사이트의 실제 구조인 h2 태그 내부 텍스트 추출
+    const rawTitle = await page.evaluate(() => {
       const h2Element = document.querySelector(".aboutColInner h2");
       return h2Element ? h2Element.innerText.trim() : "";
     });
 
+    // 폴백용 주소창 코드 명칭 추출
     const urlParts = url.split("/").filter((p) => p.length > 0);
     const fallbackName =
       urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
 
-    const finalTitle = title || fallbackName;
+    let finalTitle = fallbackName;
 
-    // 이미지 태그 크롤링 (products가 포함된 이미지 주소 추출)
+    // 💡 일본어 제목을 정상적으로 가져왔다면 한국어로 자동 번역 진행!
+    if (rawTitle) {
+      try {
+        const translation = await translate(rawTitle, { to: "ko" });
+        finalTitle = translation.text;
+        console.log(`[번역 완료] 원문: ${rawTitle} -> 한글: ${finalTitle}`);
+      } catch (transErr) {
+        console.error("번역 실패, 원문 일본어로 대체합니다:", transErr);
+        finalTitle = rawTitle; // 번역 실패 시 일본어 원문 그대로 사용
+      }
+    }
+
+    // 이미지 태그 크롤링 (products 폴더에 들어있는 알맹이 이미지들만 저격)
     const imageUrls = await page.evaluate(() => {
       return Array.from(document.querySelectorAll("img"))
         .map((img) => img.src)
-        .filter((src) => src.includes("products"));
+        .filter((src) => src.includes("/products/"));
     });
 
+    // 💡 이미지가 없다는 건 주소가 잘못되었거나 없는 번호라는 뜻!
     if (imageUrls.length === 0) {
       return res
         .status(404)
-        .json({ error: "추출할 수 있는 이미지가 없습니다." });
+        .json({
+          error:
+            "추출할 수 있는 이미지가 없거나 존재하지 않는 상품 번호입니다.",
+        });
     }
 
     const zip = new AdmZip();
@@ -84,7 +90,7 @@ app.post("/api/extract", async (req, res) => {
 
     const zipBuffer = zip.toBuffer();
 
-    // 프론트엔드가 한글 타이틀을 읽을 수 있도록 헤더 주입
+    // 헤더에 번역된 한글 타이틀 안전하게 인코딩해서 주입
     res.set({
       "Content-Type": "application/zip",
       "Content-Length": zipBuffer.length,
