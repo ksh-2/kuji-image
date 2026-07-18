@@ -3,7 +3,7 @@ const puppeteer = require("puppeteer");
 const AdmZip = require("adm-zip");
 const axios = require("axios");
 const path = require("path");
-const { translate } = require("@vitalets/google-translate-api"); // 💡 번역 라이브러리 로드
+const { translate } = require("@vitalets/google-translate-api");
 const app = express();
 
 app.use(express.json());
@@ -29,68 +29,91 @@ app.post("/api/extract", async (req, res) => {
     });
 
     const page = await browser.newPage();
-    // 💡 일본 원본 페이지를 긁기 위해 언어 설정을 일본어로 명시
+    // 일본 원본 데이터 확보를 위해 헤더 고정
     await page.setExtraHTTPHeaders({ "Accept-Language": "ja-JP,ja;q=0.9" });
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // 💡 1kuji 원본 일본어 사이트의 실제 구조인 h2 태그 내부 텍스트 추출
+    // 1kuji 일본어 원본 타이틀 획득
     const rawTitle = await page.evaluate(() => {
       const h2Element = document.querySelector(".aboutColInner h2");
       return h2Element ? h2Element.innerText.trim() : "";
     });
 
-    // 폴백용 주소창 코드 명칭 추출
     const urlParts = url.split("/").filter((p) => p.length > 0);
     const fallbackName =
       urlParts.length > 0 ? urlParts[urlParts.length - 1] : "ichibankuji";
 
     let finalTitle = fallbackName;
 
-    // 💡 일본어 제목을 정상적으로 가져왔다면 한국어로 자동 번역 진행!
     if (rawTitle) {
       try {
         const translation = await translate(rawTitle, { to: "ko" });
         finalTitle = translation.text;
-        console.log(`[번역 완료] 원문: ${rawTitle} -> 한글: ${finalTitle}`);
+        console.log(`[번역 성공] 원문: ${rawTitle} -> 한글: ${finalTitle}`);
       } catch (transErr) {
-        console.error("번역 실패, 원문 일본어로 대체합니다:", transErr);
-        finalTitle = rawTitle; // 번역 실패 시 일본어 원문 그대로 사용
+        console.error("번역 실패, 일본어 대체:", transErr);
+        finalTitle = rawTitle;
       }
     }
 
-    // 이미지 태그 크롤링 (products 폴더에 들어있는 알맹이 이미지들만 저격)
+    // 💡 [핵심 수정] 주소에 'products' 문자열 매칭 대신, 메인 본문(.mainCol) 영역 안에 있는 진짜 상품 이미지들을 타겟팅합니다.
     const imageUrls = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("img"))
+      // 본문 영역 또는 갤러리 영역의 이미지 태그들을 수집
+      const contentImages = Array.from(
+        document.querySelectorAll(
+          ".mainCol img, #galleryCol img, .aboutColInner img",
+        ),
+      );
+
+      return contentImages
         .map((img) => img.src)
-        .filter((src) => src.includes("/products/"));
+        .filter((src) => {
+          if (!src) return false;
+          // 로고, 아이콘, 탑 버튼, 페이스북/트위터 공유 버튼 이미지 등 불필요한 에셋은 전부 제외
+          const isNoise =
+            src.includes("logo") ||
+            src.includes("icon") ||
+            src.includes("btn_") ||
+            src.includes("share") ||
+            src.includes("tw.png") ||
+            src.includes("fb.png") ||
+            src.includes("line.png");
+          return !isNoise;
+        });
     });
 
-    // 💡 이미지가 없다는 건 주소가 잘못되었거나 없는 번호라는 뜻!
-    if (imageUrls.length === 0) {
+    // 중복 제거 (동일한 이미지 주소가 여러 개 파싱되는 것 방지)
+    const uniqueImageUrls = [...new Set(imageUrls)];
+
+    if (uniqueImageUrls.length === 0) {
       return res
         .status(404)
         .json({
           error:
-            "추출할 수 있는 이미지가 없거나 존재하지 않는 상품 번호입니다.",
+            "추출할 수 있는 상품 이미지가 해당 페이지에 존재하지 않습니다.",
         });
     }
 
     const zip = new AdmZip();
 
-    for (let i = 0; i < imageUrls.length; i++) {
+    for (let i = 0; i < uniqueImageUrls.length; i++) {
       try {
-        const imgResponse = await axios.get(imageUrls[i], {
+        const imgResponse = await axios.get(uniqueImageUrls[i], {
           responseType: "arraybuffer",
         });
-        zip.addFile(`image_${i + 1}.jpg`, Buffer.from(imgResponse.data));
+        // 파일 확장자 추출 (.jpg, .png 등) 및 폴백 처리
+        let ext = ".jpg";
+        if (uniqueImageUrls[i].toLowerCase().includes(".png")) ext = ".png";
+        if (uniqueImageUrls[i].toLowerCase().includes(".webp")) ext = ".webp";
+
+        zip.addFile(`image_${i + 1}${ext}`, Buffer.from(imgResponse.data));
       } catch (e) {
-        console.error("이미지 다운로드 실패:", imageUrls[i]);
+        console.error("이미지 다운로드 실패:", uniqueImageUrls[i]);
       }
     }
 
     const zipBuffer = zip.toBuffer();
 
-    // 헤더에 번역된 한글 타이틀 안전하게 인코딩해서 주입
     res.set({
       "Content-Type": "application/zip",
       "Content-Length": zipBuffer.length,
