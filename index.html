@@ -62,11 +62,28 @@
         background-color: #ccc;
         cursor: not-allowed;
       }
+
+      /* 📊 프로그레스 바 스타일 추가 */
+      .progress-container {
+        display: none; /* 기본적으로는 숨김 */
+        width: 95%;
+        background-color: #e0e0e0;
+        border-radius: 10px;
+        margin: 20px auto 10px auto;
+        overflow: hidden;
+      }
+      .progress-bar {
+        width: 0%;
+        height: 12px;
+        background-color: #28a745; /* 성공적인 초록색 */
+        transition: width 0.4s ease; /* 부드러운 애니메이션 효과 */
+      }
+
       #status {
-        margin-top: 15px;
+        margin-top: 10px;
         color: #666;
         font-size: 14px;
-        white-space: pre-line; /* 줄바꿈 지원 */
+        white-space: pre-line;
         line-height: 1.5;
       }
     </style>
@@ -76,14 +93,12 @@
       <h2>이미지 추출기 (범위 다운로드)</h2>
       <p>작품 주소와 받고 싶은 번호 범위를 입력하세요.</p>
 
-      <!-- 기본 URL 입력 (끝에 번호는 제외하고 입력해도 됨) -->
       <input
         type="text"
         id="urlInput"
         placeholder="예시: https://1kuji.com/products/myhero"
       />
 
-      <!-- 범위 입력 칸 -->
       <div class="input-group">
         <input
           type="number"
@@ -101,11 +116,16 @@
       </div>
 
       <button id="extractBtn">연속 일괄 다운로드 시작</button>
+
+      <!-- 📊 시각적 진행 상황 창 추가 -->
+      <div class="progress-container" id="progressContainer">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+
       <div id="status"></div>
     </div>
 
     <script>
-      // 안전하게 텀을 주기 위한 대기 함수 (밀리초 단위)
       const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
       document
@@ -118,6 +138,11 @@
           const endNumInput = document.getElementById("endNum").value.trim();
           const statusDiv = document.getElementById("status");
           const btn = document.getElementById("extractBtn");
+
+          // 프로그레스 바 엘리먼트 가져오기
+          const progressContainer =
+            document.getElementById("progressContainer");
+          const progressBar = document.getElementById("progressBar");
 
           if (!baseUrlInput || !startNumInput || !endNumInput) {
             alert("주소와 시작/끝 번호를 모두 입력해주세요!");
@@ -132,26 +157,29 @@
             return;
           }
 
-          // 기본 URL 베이스 다듬기 (끝에 숫자가 붙어있다면 제거해서 베이스만 남김)
-          // 예: myhero43 -> myhero 로 정규식을 통해 뒤쪽 숫자 제거
           let baseUrl = baseUrlInput;
           if (/\/products\/[a-zA-Z_-]+\d+$/.test(baseUrl)) {
             baseUrl = baseUrl.replace(/\d+$/, "");
           }
-          // 끝에 /가 붙어있다면 제거
           if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.slice(0, -1);
           }
 
           btn.disabled = true;
+
+          // 📊 다운로드 시작 시 게이지 초기화 및 표시
+          progressContainer.style.display = "block";
+          progressBar.style.width = "0%";
+
           const totalCount = endNum - startNum + 1;
+          let successCount = 0;
 
-          // 범위만큼 반복문 돌리기
           for (let i = startNum; i <= endNum; i++) {
-            const currentFilename = `${baseUrl.split("/").pop()}${i}`; // 예: myhero32
-            const currentUrl = `${baseUrl}${i}`; // 완성된 주소: https://1kuji.com/products/myhero32
+            const currentFilename = `${baseUrl.split("/").pop()}${i}`;
+            const currentUrl = `${baseUrl}${i}`;
+            const currentIndex = i - startNum + 1;
 
-            statusDiv.textContent = `[${i - startNum + 1}/${totalCount}] 현재 ${currentFilename} 분석 중...\n(Puppeteer 구동 중, 잠시만 기다려주세요)`;
+            statusDiv.textContent = `[${currentIndex}/${totalCount}] 현재 ${currentFilename} 분석 중...\n(Puppeteer 구동 중, 잠시만 기다려주세요)`;
 
             try {
               const response = await fetch(
@@ -167,35 +195,38 @@
                 throw new Error(`서버 에러 또는 없는 상품 번호입니다.`);
               }
 
-              statusDiv.textContent = `[${i - startNum + 1}/${totalCount}] ${currentFilename} 압축 완료! 다운로드 중...`;
+              statusDiv.textContent = `[${currentIndex}/${totalCount}] ${currentFilename} 압축 완료! 다운로드 중...`;
 
               const blob = await response.blob();
               const downloadUrl = window.URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = downloadUrl;
-              a.download = `${currentFilename}.zip`; // 각각 구별 가능하게 번호별 파일명 지정!
+              a.download = `${currentFilename}.zip`;
               document.body.appendChild(a);
               a.click();
               a.remove();
               window.URL.revokeObjectURL(downloadUrl);
             } catch (err) {
               console.error(err);
-              // 하나가 실패해도 멈추지 않고 알림 후 다음 번호로 넘어가도록 처리
               alert(
                 `${currentFilename} 추출 실패: ${err.message}\n다음 번호로 계속 진행합니다.`,
               );
             }
 
-            // 💡 중요: 1kuji 사이트 및 Railway 서버 과부하 방지를 위해
-            // 하나의 다운로드가 끝날 때마다 3초씩 쉬어줍니다.
+            // 📊 작업 하나가 끝날 때마다 프로그레스 바 게이지 채우기
+            const percent = Math.round((currentIndex / totalCount) * 100);
+            progressBar.style.width = `${percent}%`;
+
             if (i < endNum) {
-              statusDiv.textContent = `안전한 진행을 위해 3초간 대기 중...`;
+              statusDiv.textContent = `진행률: ${percent}%\n서버 과부화 방지 3초간 대기 중...`;
               await delay(3000);
             }
           }
 
+          // 최종 완료 처리
+          progressBar.style.width = "100%";
           statusDiv.textContent =
-            "🎉 지정한 모든 범위의 다운로드가 완료되었습니다!";
+            "지정한 모든 범위의 다운로드가 완료되었습니다!";
           btn.disabled = false;
         });
     </script>
